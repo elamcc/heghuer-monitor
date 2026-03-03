@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Monitor Heghuer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>*{box-sizing:border-box;margin:0;padding:0;}body{background:#eef2ff;font-family:sans-serif;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const SUPA_URL = "https://bbpirpamhsrlyksuyrzr.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJicGlycGFtaHNybHlrc3V5cnpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0MTI5NzgsImV4cCI6MjA4Nzk4ODk3OH0.VmLrVgDfk2HEz3QxC64IEo5LsDebwZbEzyIWrqbfziY";
+const DB_HEADERS = { "Content-Type": "application/json", "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` };
+
+const WA_NUMBERS = [
+  { phone: "51995372188", apikey: "3277276" },
+  { phone: "51958548153", apikey: "2833714" },
+];
+
+async function sendWA(msg) {
+  for (const n of WA_NUMBERS) {
+    try {
+      await fetch("/.netlify/functions/sendwa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: n.phone, text: msg, apikey: n.apikey })
+      });
+    } catch(_) {}
+  }
+}
+
+async function dbGet(date) {
+  const r = await fetch(`${SUPA_URL}/rest/v1/daily_state?date=eq.${date}&select=*`, { headers: DB_HEADERS });
+  const d = await r.json();
+  return d && d[0] ? JSON.parse(d[0].data) : null;
+}
+
+async function dbSet(date, data) {
+  const body = JSON.stringify({ date, data: JSON.stringify(data) });
+  await fetch(`${SUPA_URL}/rest/v1/daily_state`, {
+    method: "POST",
+    headers: { ...DB_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal" },
+    body
+  });
+}
+
+async function dbGetAll() {
+  const r = await fetch(`${SUPA_URL}/rest/v1/daily_state?select=*&order=date.desc`, { headers: DB_HEADERS });
+  const d = await r.json();
+  return Array.isArray(d) ? d.map(row => JSON.parse(row.data)) : [];
+}
+
+const pad = n => String(n).padStart(2,"0");
+const nowStr = () => { const d=new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const todayKey = () => { const d=new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const todayStr = () => { const d=new Date(); return `${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`; };
+
+const INIT_MEDS = [
+  {id:1,  name:"Omeprazol 20mg",       dose:"1 pastilla",  time:"07:00", note:"En ayunas",                   taken:false, conditional:false},
+  {id:2,  name:"Irbesartan 150mg",      dose:"1 pastilla",  time:"08:00", note:"Con el desayuno",             taken:false, conditional:false},
+  {id:3,  name:"Bisoprolol (mitad)",    dose:"1/2 pastilla",time:"08:00", note:"Con el desayuno",             taken:false, conditional:false},
+  {id:4,  name:"Abiraterona 250mg",     dose:"1 pastilla",  time:"10:00", note:"2h despues de comer (manana)",taken:false, conditional:false},
+  {id:5,  name:"Prednisona 5mg",        dose:"1 pastilla",  time:"10:00", note:"Junto con Abiraterona",       taken:false, conditional:false},
+  {id:6,  name:"Aspirina",             dose:"1 pastilla",  time:"13:00", note:"Despues del almuerzo",        taken:false, conditional:false},
+  {id:7,  name:"Centrum Silver",        dose:"1 pastilla",  time:"13:00", note:"Despues del almuerzo",        taken:false, conditional:false},
+  {id:8,  name:"Abiraterona 250mg",     dose:"1 pastilla",  time:"17:00", note:"2h despues de comer (tarde)", taken:false, conditional:false},
+  {id:9,  name:"Irbesartan 150mg",      dose:"1 pastilla",  time:"20:00", note:"Con la cena",                 taken:false, conditional:false},
+  {id:10, name:"Atorvastatina",         dose:"1 pastilla",  time:"20:00", note:"Despues de la cena",          taken:false, conditional:false},
+  {id:11, name:"Tamsulosina",           dose:"1 pastilla",  time:"22:00", note:"Antes de dormir",             taken:false, conditional:false},
+  {id:12, name:"Gotas para los ojos",   dose:"1 gota c/ojo",time:"--",   note:"Cada 8h si necesita",         taken:false, conditional:true},
+  {id:13, name:"Betahistina 16mg",      dose:"1 pastilla",  time:"--",   note:"Si hay zumbido de oidos",     taken:false, conditional:true},
+  {id:14, name:"Panadol Forte",         dose:"2 pastillas", time:"--",   note:"Si hay dolor",                taken:false, conditional:true},
+  {id:15, name:"Supracal 1g",           dose:"1 pastilla",  time:"--",   note:"Si hay dolor",                taken:false, conditional:true},
+];
+
+function FamiliarView({meds, checkinDone, onCheckin, onMedTaken, saving}) {
+  const [showCond, setShowCond] = useState(false);
+  const regular = meds.filter(m => !m.conditional);
+  const cond = meds.filter(m => m.conditional);
+  return (
+    <div style={{minHeight:"100vh",background:"#eef2ff",display:"flex",flexDirection:"column",alignItems:"center",padding:"70px 16px 24px",gap:20}}>
+      <div style={{textAlign:"center"}}>
+        <p style={{fontSize:36}}>👴</p>
+        <h1 style={{fontSize:26,color:"#1e3a5f"}}>Hola, Heghuer</h1>
+        <p style={{color:"#6b7280",fontSize:13}}>{todayStr()}</p>
+      </div>
+
+      <button onClick={() => sendWA(`SOS EMERGENCIA\nHeghuer presiono el boton de emergencia.\nHora: ${nowStr()} - ${todayStr()}\nVerifica su estado inmediatamente.`)}
+        style={{width:200,height:200,borderRadius:"50%",background:"#dc2626",color:"white",border:"6px solid #fca5a5",cursor:"pointer",fontSize:18,fontWeight:"bold",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,boxShadow:"0 8px 30px rgba(220,38,38,0.45)"}}>
+        <span style={{fontSize:52}}>🆘</span>EMERGENCIA
+      </button>
+
+      <div style={{background:"white",borderRadius:20,padding:20,width:"100%",maxWidth:360,boxShadow:"0 2px 12px rgba(0,0,0,0.08)",textAlign:"center"}}>
+        <p style={{fontSize:18,marginBottom:12,color:"#374151"}}>Como estas hoy?</p>
+        {checkinDone
+          ? <div>
+              <p style={{color:"#16a34a",fontSize:17,fontWeight:"bold",marginBottom:8}}>Ya avisaste que estas bien</p>
+              <button onClick={() => onCheckin(false)} style={{background:"#f1f5f9",color:"#64748b",border:"none",borderRadius:10,padding:"8px 16px",fontSize:13,cursor:"pointer"}}>Deshacer</button>
+            </div>
+          : <button onClick={() => onCheckin(true)} style={{background:"#16a34a",color:"white",border:"none",borderRadius:12,padding:"14px 28px",fontSize:18,cursor:"pointer",fontWeight:"bold"}}>Estoy bien</button>
+        }
+      </div>
+
+      <div style={{background:"white",borderRadius:20,padding:20,width:"100%",maxWidth:360,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <p style={{fontSize:18,fontWeight:"bold",color:"#1e3a5f",margin:0}}>Medicamentos de hoy</p>
+          {saving && <span style={{fontSize:12,color:"#9ca3af"}}>Guardando...</span>}
+        </div>
+        {regular.map(m => (
+          <div key={m.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,padding:"10px 12px",borderRadius:12,background:m.taken?"#dcfce7":"#fffbeb",border:`2px solid ${m.taken?"#86efac":"#fde047"}`}}>
+            <div style={{flex:1}}>
+              <p style={{margin:0,fontWeight:"bold",fontSize:15}}>{m.name}</p>
+              <p style={{margin:0,color:"#6b7280",fontSize:12}}>{m.time} - {m.dose}</p>
+              <p style={{margin:0,color:"#9ca3af",fontSize:11}}>{m.note}</p>
+            </div>
+            {m.taken
+              ? <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,marginLeft:8}}>
+                  <span style={{fontSize:26}}>✅</span>
+                  <button onClick={() => onMedTaken(m.id, false)} style={{background:"none",border:"none",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>deshacer</button>
+                </div>
+              : <button onClick={() => onMedTaken(m.id, true)} style={{background:"#2563eb",color:"white",border:"none",borderRadius:10,padding:"8px 12px",fontSize:14,cursor:"pointer",fontWeight:"bold",marginLeft:8}}>Tome</button>
+            }
+          </div>
+        ))}
+      </div>
+
+      <div style={{background:"white",borderRadius:20,padding:20,width:"100%",maxWidth:360,boxShadow:"0 2px 12px rgba(0,0,0,0.08)"}}>
+        <button onClick={() => setShowCond(p=>!p)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,fontWeight:"bold",color:"#7c3aed",padding:0,width:"100%",textAlign:"left"}}>
+          {showCond?"▲":"▼"} Si los necesito
+        </button>
+        {showCond && cond.map(m => (
+          <div key={m.id} style={{marginTop:10,padding:"10px 12px",borderRadius:12,background:"#f5f3ff",border:"2px solid #c4b5fd"}}>
+            <p style={{margin:0,fontWeight:"bold",fontSize:15}}>{m.name} - {m.dose}</p>
+            <p style={{margin:0,color:"#6b7280",fontSize:12}}>{m.note}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CuidadorView({meds, events, checkinDone, checkinTime, loading}) {
+  const [tab, setTab] = useState("hoy");
+  const [history, setHistory] = useState([]);
+  const [loadingHist, setLoadingHist] = useState(false);
+  const regular = meds.filter(m => !m.conditional);
+  const taken = regular.filter(m => m.taken).length;
+
+  useEffect(() => {
+    if (tab === "historial") {
+      setLoadingHist(true);
+      dbGetAll().then(h => { setHistory(h); setLoadingHist(false); });
+    }
+  }, [tab]);
+
+  return (
+    <div style={{minHeight:"100vh",background:"#f8fafc",padding:"70px 16px 24px"}}>
+      <h1 style={{fontSize:22,color:"#1e3a5f",marginBottom:2}}>Panel del Cuidador</h1>
+      <p style={{color:"#6b7280",marginBottom:16,fontSize:13}}>Monitoreando a Heghuer - {todayStr()}</p>
+      {loading && <div style={{background:"#dbeafe",borderRadius:12,padding:12,marginBottom:16,fontSize:14,color:"#1d4ed8"}}>Cargando datos...</div>}
+
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {["hoy","historial"].map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{padding:"8px 20px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:tab===t?"bold":"normal",background:tab===t?"#2563eb":"white",color:tab===t?"white":"#374151",boxShadow:"0 1px 4px rgba(0,0,0,0.1)"}}>
+            {t==="hoy" ? "Hoy" : "Historial"}
+          </button>
+        ))}
+      </div>
+
+      {tab==="hoy" && <>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+          <div style={{background:checkinDone?"#dcfce7":"#fee2e2",borderRadius:16,padding:16,textAlign:"center"}}>
+            <p style={{fontSize:30,margin:0}}>{checkinDone?"😊":"⚠️"}</p>
+            <p style={{fontWeight:"bold",fontSize:13,margin:"4px 0 0"}}>Check-in</p>
+            <p style={{fontSize:12,color:"#4b5563",margin:0}}>{checkinDone ? `${checkinTime}` : "Sin confirmar"}</p>
+          </div>
+          <div style={{background:taken===regular.length?"#dcfce7":taken>0?"#fef9c3":"#fee2e2",borderRadius:16,padding:16,textAlign:"center"}}>
+            <p style={{fontSize:30,margin:0}}>💊</p>
+            <p style={{fontWeight:"bold",fontSize:13,margin:"4px 0 0"}}>Medicamentos</p>
+            <p style={{fontSize:12,color:"#4b5563",margin:0}}>{taken}/{regular.length} tomados</p>
+          </div>
+        </div>
+
+        <div style={{background:"white",borderRadius:16,padding:16,marginBottom:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+          <p style={{fontWeight:"bold",marginBottom:12,color:"#1e3a5f"}}>Estado medicamentos</p>
+          {regular.map(m => (
+            <div key={m.id} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid #f1f5f9",fontSize:14}}>
+              <span>{m.taken?"✅":"⏳"} <b>{m.name}</b></span>
+              <span style={{color:"#9ca3af"}}>{m.time}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={{background:"white",borderRadius:16,padding:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+          <p style={{fontWeight:"bold",marginBottom:12,color:"#1e3a5f"}}>Registro de hoy</p>
+          {events.length===0
+            ? <p style={{color:"#9ca3af",fontSize:14}}>Sin eventos aun</p>
+            : events.slice().reverse().map((ev,i) => (
+              <div key={i} style={{display:"flex",gap:10,padding:"6px 0",borderBottom:"1px solid #f1f5f9",fontSize:14}}>
+                <span style={{color:"#9ca3af",minWidth:42}}>{ev.time}</span>
+                <span>{ev.icon} {ev.msg}</span>
+              </div>
+            ))
+          }
+        </div>
+      </>}
+
+      {tab==="historial" && <div style={{background:"white",borderRadius:16,padding:16,boxShadow:"0 1px 8px rgba(0,0,0,0.06)"}}>
+        <p style={{fontWeight:"bold",marginBottom:12,color:"#1e3a5f"}}>Historial de dias</p>
+        {loadingHist ? <p style={{color:"#9ca3af",fontSize:14}}>Cargando...</p>
+        : history.length===0 ? <p style={{color:"#9ca3af",fontSize:14}}>No hay historial aun</p>
+        : history.map((day,i) => (
+          <div key={i} style={{marginBottom:14,padding:14,borderRadius:12,background:"#f8fafc",border:"1px solid #e2e8f0"}}>
+            <p style={{fontWeight:"bold",color:"#1e3a5f",margin:"0 0 6px",fontSize:15}}>{day.dateStr}</p>
+            <p style={{margin:"0 0 4px",fontSize:14}}>{day.checkinDone?"Check-in confirmado":"Sin check-in"} {day.checkinTime&&`a las ${day.checkinTime}`}</p>
+            <p style={{margin:"0 0 8px",fontSize:14}}>{day.takenCount}/{day.totalMeds} medicamentos tomados</p>
+            {day.events&&day.events.length>0&&(
+              <details>
+                <summary style={{cursor:"pointer",fontSize:13,color:"#6b7280"}}>Ver registro ({day.events.length} eventos)</summary>
+                <div style={{marginTop:8}}>
+                  {day.events.map((ev,j) => (
+                    <div key={j} style={{display:"flex",gap:8,padding:"3px 0",fontSize:13}}>
+                      <span style={{color:"#9ca3af",minWidth:42}}>{ev.time}</span>
+                      <span>{ev.icon} {ev.msg}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        ))}
+      </div>}
+    </div>
+  );
+}
+
+function App() {
+  const [view, setView] = useState("familiar");
+  const [meds, setMeds] = useState(INIT_MEDS);
+  const [checkinDone, setCheckinDone] = useState(false);
+  const [checkinTime, setCheckinTime] = useState("");
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    dbGet(todayKey()).then(data => {
+      if (data) {
+        setMeds(data.meds || INIT_MEDS);
+        setCheckinDone(data.checkinDone || false);
+        setCheckinTime(data.checkinTime || "");
+        setEvents(data.events || []);
+      }
+      setLoading(false);
+    });
+    const interval = setInterval(() => {
+      dbGet(todayKey()).then(data => {
+        if (data) {
+          setMeds(data.meds || INIT_MEDS);
+          setCheckinDone(data.checkinDone || false);
+          setCheckinTime(data.checkinTime || "");
+          setEvents(data.events || []);
+        }
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  async function persist(newMeds, newCheckin, newCheckinTime, newEvents) {
+    setSaving(true);
+    const data = {
+      meds: newMeds, checkinDone: newCheckin, checkinTime: newCheckinTime,
+      events: newEvents, dateStr: todayStr(),
+      takenCount: newMeds.filter(m=>!m.conditional&&m.taken).length,
+      totalMeds: newMeds.filter(m=>!m.conditional).length,
+    };
+    await dbSet(todayKey(), data);
+    setSaving(false);
+  }
+
+  function handleCheckin(val) {
+    const t = val ? nowStr() : "";
+    const newEvents = [...events, {time:nowStr(), icon:val?"😊":"↩", msg:val?"Check-in confirmado.":"Check-in deshecho."}];
+    setCheckinDone(val);
+    setCheckinTime(t);
+    setEvents(newEvents);
+    persist(meds, val, t, newEvents);
+    if (val) sendWA(`Heghuer confirmo que esta bien a las ${t} del ${todayStr()}.`);
+  }
+
+  function handleMedTaken(id, val) {
+    const med = meds.find(m => m.id===id);
+    const newMeds = meds.map(m => m.id===id ? {...m, taken:val} : m);
+    const newEvents = [...events, {time:nowStr(), icon:val?"💊":"↩", msg:`${med?.name} - ${val?"tomado":"desmarcado"}.`}];
+    setMeds(newMeds);
+    setEvents(newEvents);
+    persist(newMeds, checkinDone, checkinTime, newEvents);
+    if (val) {
+      const allTaken = newMeds.filter(m=>!m.conditional).every(m=>m.taken);
+      if (allTaken) {
+        sendWA(`Heghuer tomo TODAS sus pastillas del dia!\nUltima: ${med?.name} (${med?.time})\n${todayStr()}`);
+      } else {
+        sendWA(`Heghuer tomo: ${med?.name} (${med?.time})\n${todayStr()}`);
+      }
+    }
+  }
+
+  return (
+    <div style={{maxWidth:430,margin:"0 auto",position:"relative"}}>
+      <div style={{position:"fixed",top:12,right:12,zIndex:100,display:"flex",background:"white",borderRadius:20,boxShadow:"0 2px 10px rgba(0,0,0,0.15)",overflow:"hidden"}}>
+        <button onClick={()=>setView("familiar")} style={{padding:"8px 14px",border:"none",cursor:"pointer",fontWeight:view==="familiar"?"bold":"normal",background:view==="familiar"?"#2563eb":"white",color:view==="familiar"?"white":"#374151",fontSize:13}}>Heghuer</button>
+        <button onClick={()=>setView("cuidador")} style={{padding:"8px 14px",border:"none",cursor:"pointer",fontWeight:view==="cuidador"?"bold":"normal",background:view==="cuidador"?"#2563eb":"white",color:view==="cuidador"?"white":"#374151",fontSize:13}}>Cuidador</button>
+      </div>
+      {loading
+        ? <div style={{display:"flex",justifyContent:"center",alignItems:"center",height:"100vh",fontSize:18,color:"#6b7280"}}>Cargando...</div>
+        : view==="familiar"
+          ? <FamiliarView meds={meds} checkinDone={checkinDone} onCheckin={handleCheckin} onMedTaken={handleMedTaken} saving={saving}/>
+          : <CuidadorView meds={meds} events={events} checkinDone={checkinDone} checkinTime={checkinTime} loading={loading}/>
+      }
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
